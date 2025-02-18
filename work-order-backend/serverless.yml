@@ -1,0 +1,256 @@
+# "org" ensures this Service is used with the correct Serverless Framework Access Key.
+org: nicolasenterprise
+# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
+app: work-order
+# "service" is the name of this project. This will also be added to your AWS resource names.
+service: work-order-backend
+
+stages:
+  default:
+    params:
+      tableName: "orders-table-${sls:stage}"
+      snsTopic: "arn:aws:sns:us-east-1:605134431763:messages-order"
+
+plugins:
+  - serverless-wsgi
+  - serverless-python-requirements
+
+custom:
+  wsgi:
+    app: app.app
+
+provider:
+  name: aws
+  region: us-east-1
+  runtime: python3.10
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - Fn::GetAtt: [UsersTable, Arn]
+        - Effect: Allow
+          Action:
+            - sns:Publish
+          Resource:
+            - !Ref SNSTopicARN
+
+  environment:
+    USERS_TABLE: ${param:tableName}
+    SNS_TOPIC: ${param:snsTopic}
+
+functions:
+  request-lambda:
+    handler: app.handler
+    description: Lambda que recibe las ordenes de trabajo
+    timeout: 35
+    events:
+      - http:
+          path: /
+          method: ANY
+      - http:
+          path: /{proxy+}
+          method: ANY
+  proccessing-orders-lambda:
+    handler: processing-lam.handler
+    description: Lambda que procesa las ordenes de trabajo que se encuentran en cola
+    timeout: 10
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - ProcessedOrder
+              - Arn
+          batchSize: 10
+          maximumBatchingWindow: 60
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - ReceivedOrder
+              - Arn
+          batchSize: 10
+          maximumBatchingWindow: 60
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - CompletedOrder
+              - Arn
+          batchSize: 10
+          maximumBatchingWindow: 60
+
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - CanceledOrder
+              - Arn
+          batchSize: 10
+          maximumBatchingWindow: 60
+
+
+resources:
+  Parameters:
+    SNSTopicARN:
+      Type: String
+      Default: arn:aws:sns:us-east-1:605134431763:messages-order 
+    TopicRegion:
+      Type: String
+      Default: us-east-1
+  Resources:
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TableName: ${param:tableName}
+    ProcessedOrder:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: processed-order-queue
+    ReceivedOrder:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: received-order-queue
+    CompletedOrder:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: completed-order-queue
+    CanceledOrder:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: canceled-order-queue
+    SqsQueueProcessedPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+       PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyQueuePolicy
+        Statement:
+        - Sid: Allow-SNS-SendMessage
+          Effect: Allow
+          Principal: "*"
+          Action:
+          - sqs:SendMessage
+          Resource: !GetAtt ProcessedOrder.Arn
+          Condition:
+           ArnEquals:
+            aws:SourceArn: !Ref SNSTopicARN
+       Queues:
+        - !Ref ProcessedOrder
+    SqsQueueReceivedPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+       PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyQueuePolicy
+        Statement:
+        - Sid: Allow-SNS-SendMessage
+          Effect: Allow
+          Principal: "*"
+          Action:
+          - sqs:SendMessage
+          Resource: !GetAtt ReceivedOrder.Arn
+          Condition:
+           ArnEquals:
+            aws:SourceArn: !Ref SNSTopicARN
+       Queues:
+        - !Ref ReceivedOrder
+    SqsQueueCompletedPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+       PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyQueuePolicy
+        Statement:
+        - Sid: Allow-SNS-SendMessage
+          Effect: Allow
+          Principal: "*"
+          Action:
+          - sqs:SendMessage
+          Resource: !GetAtt CompletedOrder.Arn
+          Condition:
+           ArnEquals:
+            aws:SourceArn: !Ref SNSTopicARN
+       Queues:
+        - !Ref CompletedOrder
+    SqsQueueCanceledPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+       PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyQueuePolicy
+        Statement:
+        - Sid: Allow-SNS-SendMessage
+          Effect: Allow
+          Principal: "*"
+          Action:
+          - sqs:SendMessage
+          Resource: !GetAtt CanceledOrder.Arn
+          Condition:
+           ArnEquals:
+            aws:SourceArn: !Ref SNSTopicARN
+       Queues:
+        - !Ref CanceledOrder
+    MessagesOrder:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: messages-order
+    SnsSubscriptionProcessed:
+      Type: AWS::SNS::Subscription
+      Properties:
+       DependsOn: MessagesOrder
+       Protocol: sqs
+       Endpoint: !GetAtt ProcessedOrder.Arn
+       Region: !Ref TopicRegion
+       TopicArn: !Ref SNSTopicARN
+       FilterPolicyScope: MessageAttributes
+       FilterPolicy:
+        estado:
+          - EN_PROCESO
+    SnsSubscriptionReceived:
+      Type: AWS::SNS::Subscription
+      Properties:
+       Protocol: sqs
+       Endpoint: !GetAtt ReceivedOrder.Arn
+       Region: !Ref TopicRegion
+       TopicArn: !Ref SNSTopicARN
+       FilterPolicyScope: MessageAttributes
+       FilterPolicy:
+        estado:
+          - RECIBIDA
+    SnsSubscriptionCompleted:
+      Type: AWS::SNS::Subscription
+      Properties:
+       Protocol: sqs
+       Endpoint: !GetAtt CompletedOrder.Arn
+       Region: !Ref TopicRegion
+       TopicArn: !Ref SNSTopicARN
+       FilterPolicyScope: MessageAttributes
+       FilterPolicy:
+        estado:
+          - COMPLETADA
+    SnsSubscriptionCanceled:
+      Type: AWS::SNS::Subscription
+      Properties:
+       Protocol: sqs
+       Endpoint: !GetAtt CanceledOrder.Arn
+       Region: !Ref TopicRegion
+       TopicArn: !Ref SNSTopicARN
+       FilterPolicyScope: MessageAttributes
+       FilterPolicy:
+        estado:
+          - CANCELADA
+
