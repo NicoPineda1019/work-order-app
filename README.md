@@ -20,6 +20,8 @@ curl --location 'https://curpwfamjl.execute-api.us-east-1.amazonaws.com/dev/v1/o
 
 # Documentación adicional
 
+Ver Documentación_solución
+
 # Arquitectura
 
 ![alt text](./image.png)
